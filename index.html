@@ -320,12 +320,14 @@
 </head>
 <body>
 <div class="mobile-banner">Works best on a laptop &mdash; you'll need a keyboard to play!</div>
+<!-- ribbon:start -->
 <div class="about-line">
   Made by Daniel Golliher with Claude Code
   (<a href="https://twitter.com/danielgolliher" target="_blank" rel="noopener">Twitter</a>
   &middot; <a href="https://linkedin.com/in/danielgolliher" target="_blank" rel="noopener">LinkedIn</a>)
   <button id="theme-toggle" class="theme-toggle" title="Switch aesthetic">Theme: Midnight</button>
 </div>
+<!-- ribbon:end -->
 <div id="app" class="app"></div>
 <script>
 "use strict";
@@ -1077,6 +1079,8 @@ class Game {
     this.palette = PALETTES[state.p];
 
     this.keys = {};
+    this.kbKeys = {};
+    this.prevStartBtn = false;
     this.t = 0;
     this.running = false;
     this.paused = false;
@@ -1120,7 +1124,7 @@ class Game {
 
   bindInput() {
     this.keyDown = (e) => {
-      this.keys[e.key.toLowerCase()] = true;
+      this.kbKeys[e.key.toLowerCase()] = true;
       if (e.key === ' ') e.preventDefault();
       if (e.key.toLowerCase() === 'r' && this.status !== 'playing') {
         this.reset();
@@ -1132,7 +1136,7 @@ class Game {
         if (!Audio.isMuted()) Audio.startMusic(this.music.id, this.music.tempo);
       }
     };
-    this.keyUp = (e) => { this.keys[e.key.toLowerCase()] = false; };
+    this.keyUp = (e) => { this.kbKeys[e.key.toLowerCase()] = false; };
     window.addEventListener('keydown', this.keyDown);
     window.addEventListener('keyup', this.keyUp);
   }
@@ -1140,6 +1144,33 @@ class Game {
   unbindInput() {
     window.removeEventListener('keydown', this.keyDown);
     window.removeEventListener('keyup', this.keyUp);
+  }
+
+  pollGamepad() {
+    const gp = {};
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    let pad = null;
+    for (const p of pads) if (p && p.connected) { pad = p; break; }
+    if (!pad) { this.prevStartBtn = false; return gp; }
+    const dead = 0.2;
+    const lx = pad.axes[0] || 0;
+    const ly = pad.axes[1] || 0;
+    const btn = (i) => pad.buttons[i] && pad.buttons[i].pressed;
+    if (lx < -dead || btn(14)) gp['a'] = true;
+    if (lx >  dead || btn(15)) gp['d'] = true;
+    if (ly < -dead || btn(12)) gp['w'] = true;
+    if (ly >  dead || btn(13)) gp['s'] = true;
+    // any face button or right trigger = attack
+    if (btn(0) || btn(1) || btn(2) || btn(3) || btn(5) || btn(7)) gp[' '] = true;
+    // Start button (edge-triggered) = restart when not playing
+    const startNow = btn(9);
+    if (startNow && !this.prevStartBtn && this.status !== 'playing') {
+      this.reset();
+      Audio.startMusic(this.music.id, this.music.tempo);
+      Audio.sfx.waveStart();
+    }
+    this.prevStartBtn = startNow;
+    return gp;
   }
 
   start() {
@@ -1163,6 +1194,8 @@ class Game {
   }
 
   tick() {
+    const gp = this.pollGamepad();
+    this.keys = { ...this.kbKeys, ...gp };
     if (this.status !== 'playing') return;
     this.t++;
     this.totalFrames++;
@@ -2065,10 +2098,12 @@ let currentSplashTimer = null;
 let currentSplashStartHandler = null;
 let currentSplashCanvasClick = null;
 let currentSplashCanvasEl = null;
+let currentSplashGamepadRaf = null;
 
 function stopCurrentPlay() {
   if (currentGame) { currentGame.stop(); currentGame = null; }
   if (currentSplashTimer) { clearInterval(currentSplashTimer); currentSplashTimer = null; }
+  if (currentSplashGamepadRaf) { cancelAnimationFrame(currentSplashGamepadRaf); currentSplashGamepadRaf = null; }
   if (currentSplashStartHandler) {
     window.removeEventListener('keydown', currentSplashStartHandler);
     currentSplashStartHandler = null;
@@ -2114,6 +2149,9 @@ function renderPlay(root, state) {
         · Attack: <kbd>Space</kbd>
         · Mute: <kbd>M</kbd>
         · Restart: <kbd>R</kbd>
+        <br>
+        Controller: left stick / D-pad to move · any face button or right trigger to attack · <kbd>Start</kbd> to restart
+        <span id="gp-indicator" style="display:none;color:var(--ok);margin-left:8px">&bull; controller detected</span>
       </div>
       <div class="play-footer">
         Built with <a href="?">8-Bit Game Maker</a> · <a href="?">Make your own</a>
@@ -2147,6 +2185,7 @@ function renderPlay(root, state) {
     if (started) return;
     started = true;
     if (currentSplashTimer) { clearInterval(currentSplashTimer); currentSplashTimer = null; }
+    if (currentSplashGamepadRaf) { cancelAnimationFrame(currentSplashGamepadRaf); currentSplashGamepadRaf = null; }
     if (currentSplashStartHandler) {
       window.removeEventListener('keydown', currentSplashStartHandler);
       currentSplashStartHandler = null;
@@ -2164,6 +2203,23 @@ function renderPlay(root, state) {
   currentSplashCanvasEl = canvas;
   window.addEventListener('keydown', startGame);
   canvas.addEventListener('click', startGame);
+
+  // Poll gamepad during splash: any button press starts the game;
+  // also reveal the "controller detected" indicator on first connection.
+  const gpIndicator = root.querySelector('#gp-indicator');
+  const pollSplashGamepad = () => {
+    if (started) return;
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const p of pads) {
+      if (!p || !p.connected) continue;
+      if (gpIndicator) gpIndicator.style.display = 'inline';
+      if (p.buttons.some(b => b && b.pressed)) { startGame(); return; }
+      const stickMoved = (p.axes || []).some(a => Math.abs(a) > 0.5);
+      if (stickMoved) { startGame(); return; }
+    }
+    currentSplashGamepadRaf = requestAnimationFrame(pollSplashGamepad);
+  };
+  pollSplashGamepad();
 
   // pulse the "press any key" text
   currentSplashTimer = setInterval(() => {
@@ -2265,10 +2321,11 @@ function renderShare(root, state, url) {
   });
 
   root.querySelector('#btn-download').addEventListener('click', async () => {
-    // fetch the page source and download it
     try {
       const res = await fetch(location.pathname);
-      const html = await res.text();
+      let html = await res.text();
+      // strip the creator ribbon from the downloaded copy
+      html = html.replace(/\s*<!-- ribbon:start -->[\s\S]*?<!-- ribbon:end -->\s*/, '\n');
       const blob = new Blob([html], { type: 'text/html' });
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob);
@@ -2329,7 +2386,8 @@ function cycleTheme() {
 
 function main() {
   applyTheme(getTheme());
-  document.getElementById('theme-toggle').addEventListener('click', cycleTheme);
+  const tb = document.getElementById('theme-toggle');
+  if (tb) tb.addEventListener('click', cycleTheme);
   const root = document.getElementById('app');
   if (isPlayMode()) {
     const state = readState();
