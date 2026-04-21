@@ -1096,6 +1096,7 @@ class Game {
     this.keys = {};
     this.kbKeys = {};
     this.prevStartBtn = false;
+    this.prevSelectBtn = false;
     this.t = 0;
     this.running = false;
     this.paused = false;
@@ -1206,6 +1207,12 @@ class Game {
       }
     }
     this.prevStartBtn = startNow;
+    // Select button (edge-triggered): toggle fullscreen
+    const selectNow = btn(8);
+    if (selectNow && !this.prevSelectBtn) {
+      this.toggleFullscreen();
+    }
+    this.prevSelectBtn = selectNow;
     return gp;
   }
 
@@ -2235,7 +2242,7 @@ function renderPlay(root, state) {
         · Mute: <kbd>M</kbd>
         · Restart: <kbd>R</kbd>
         <br>
-        Controller: left stick / D-pad to move · any face button or right trigger to attack · <kbd>Start</kbd> to pause or restart
+        Controller: left stick / D-pad to move · any face button or right trigger to attack · <kbd>Start</kbd> to pause or restart · <kbd>Select</kbd> for fullscreen
         <span id="gp-indicator" style="display:none;color:var(--ok);margin-left:8px">&bull; controller detected</span>
       </div>
       <div class="play-footer">
