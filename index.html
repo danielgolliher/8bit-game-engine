@@ -227,6 +227,21 @@
     min-height: 220px;
   }
   canvas { display: block; image-rendering: pixelated; }
+  .canvas-stack:fullscreen {
+    background: #000;
+    width: 100vw;
+    height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .canvas-stack:fullscreen canvas {
+    width: 100vw;
+    height: 100vh;
+    object-fit: contain;
+    max-width: 100vw;
+    max-height: 100vh;
+  }
   .mobile-banner {
     display: none;
     background: var(--accent);
@@ -322,7 +337,7 @@
 <div class="mobile-banner">Works best on a laptop &mdash; you'll need a keyboard to play!</div>
 <!-- ribbon:start -->
 <div class="about-line">
-  Made by Daniel Golliher with Claude Code
+  Made by <a href="https://danielgolliher.com" target="_blank" rel="noopener">Daniel Golliher</a> with Claude Code
   (<a href="https://twitter.com/danielgolliher" target="_blank" rel="noopener">Twitter</a>
   &middot; <a href="https://linkedin.com/in/danielgolliher" target="_blank" rel="noopener">LinkedIn</a>)
   <button id="theme-toggle" class="theme-toggle" title="Switch aesthetic">Theme: Midnight</button>
@@ -1126,19 +1141,36 @@ class Game {
     this.keyDown = (e) => {
       this.kbKeys[e.key.toLowerCase()] = true;
       if (e.key === ' ') e.preventDefault();
-      if (e.key.toLowerCase() === 'r' && this.status !== 'playing') {
+      const k = e.key.toLowerCase();
+      if (k === 'r' && this.status !== 'playing') {
         this.reset();
         Audio.startMusic(this.music.id, this.music.tempo);
         Audio.sfx.waveStart();
       }
-      if (e.key.toLowerCase() === 'm') {
+      if (k === 'm') {
         Audio.setMuted(!Audio.isMuted());
-        if (!Audio.isMuted()) Audio.startMusic(this.music.id, this.music.tempo);
+        if (!Audio.isMuted() && !this.paused) Audio.startMusic(this.music.id, this.music.tempo);
       }
+      if (k === 'p') this.togglePause();
+      if (k === 'f') this.toggleFullscreen();
     };
     this.keyUp = (e) => { this.kbKeys[e.key.toLowerCase()] = false; };
     window.addEventListener('keydown', this.keyDown);
     window.addEventListener('keyup', this.keyUp);
+  }
+
+  togglePause() {
+    if (this.status !== 'playing') return;
+    this.paused = !this.paused;
+    if (this.paused) Audio.stopMusic();
+    else if (!Audio.isMuted()) Audio.startMusic(this.music.id, this.music.tempo);
+    if (this.onPauseChange) this.onPauseChange(this.paused);
+  }
+
+  toggleFullscreen() {
+    const wrap = this.canvas.parentElement;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (wrap && wrap.requestFullscreen) wrap.requestFullscreen();
   }
 
   unbindInput() {
@@ -1162,12 +1194,16 @@ class Game {
     if (ly >  dead || btn(13)) gp['s'] = true;
     // any face button or right trigger = attack
     if (btn(0) || btn(1) || btn(2) || btn(3) || btn(5) || btn(7)) gp[' '] = true;
-    // Start button (edge-triggered) = restart when not playing
+    // Start button (edge-triggered): restart on game-over, else toggle pause
     const startNow = btn(9);
-    if (startNow && !this.prevStartBtn && this.status !== 'playing') {
-      this.reset();
-      Audio.startMusic(this.music.id, this.music.tempo);
-      Audio.sfx.waveStart();
+    if (startNow && !this.prevStartBtn) {
+      if (this.status !== 'playing') {
+        this.reset();
+        Audio.startMusic(this.music.id, this.music.tempo);
+        Audio.sfx.waveStart();
+      } else {
+        this.togglePause();
+      }
     }
     this.prevStartBtn = startNow;
     return gp;
@@ -1180,7 +1216,9 @@ class Game {
     Audio.startMusic(this.music.id, this.music.tempo);
     const loop = () => {
       if (!this.running) return;
-      this.tick();
+      const gp = this.pollGamepad();
+      this.keys = { ...this.kbKeys, ...gp };
+      if (!this.paused) this.tick();
       this.render();
       requestAnimationFrame(loop);
     };
@@ -1194,8 +1232,6 @@ class Game {
   }
 
   tick() {
-    const gp = this.pollGamepad();
-    this.keys = { ...this.kbKeys, ...gp };
     if (this.status !== 'playing') return;
     this.t++;
     this.totalFrames++;
@@ -1248,6 +1284,31 @@ class Game {
 
     // update enemies
     for (const e of this.enemies) this.updateEnemy(e);
+    // enemy-enemy separation so they don't stack into a single tile
+    for (let i = 0; i < this.enemies.length; i++) {
+      for (let j = i + 1; j < this.enemies.length; j++) {
+        const a = this.enemies[i], b = this.enemies[j];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        let d = Math.hypot(dx, dy);
+        const minDist = a.r + b.r;
+        if (d >= minDist) continue;
+        let nx, ny;
+        if (d < 0.01) {
+          const ang = (a.seed + b.seed) * 0.5;
+          nx = Math.cos(ang); ny = Math.sin(ang);
+          d = 0.01;
+        } else {
+          nx = dx / d; ny = dy / d;
+        }
+        const push = (minDist - d) * 0.5;
+        a.x -= nx * push; a.y -= ny * push;
+        b.x += nx * push; b.y += ny * push;
+      }
+    }
+    for (const e of this.enemies) {
+      e.x = clamp(e.x, -20, GAME_W + 20);
+      e.y = clamp(e.y, -20, GAME_H + 20);
+    }
     // update projectiles
     for (const pr of this.projectiles) this.updateProjectile(pr);
     this.projectiles = this.projectiles.filter(pr => pr.alive);
@@ -1450,6 +1511,7 @@ class Game {
         pr.hit.add(e);
         Audio.sfx.hit();
         if (pr.type !== 'returning') pr.alive = false;
+        break;
       }
     }
   }
@@ -1531,6 +1593,19 @@ class Game {
       ctx.font = 'bold 24px Courier New';
       ctx.textAlign = 'center';
       ctx.fillText(`WAVE ${this.wave}`, GAME_W/2, GAME_H/2 + 8);
+    }
+
+    // paused overlay
+    if (this.paused && this.status === 'playing') {
+      ctx.fillStyle = 'rgba(0,0,0,0.6)';
+      ctx.fillRect(0, 0, GAME_W, GAME_H);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#ffcc22';
+      ctx.font = 'bold 48px Courier New';
+      ctx.fillText('PAUSED', GAME_W/2, GAME_H/2);
+      ctx.font = '14px Courier New';
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText('Press P or Start to resume', GAME_W/2, GAME_H/2 + 32);
     }
 
     // end screens
@@ -2099,6 +2174,7 @@ let currentSplashStartHandler = null;
 let currentSplashCanvasClick = null;
 let currentSplashCanvasEl = null;
 let currentSplashGamepadRaf = null;
+let currentFullscreenHandler = null;
 
 function stopCurrentPlay() {
   if (currentGame) { currentGame.stop(); currentGame = null; }
@@ -2113,6 +2189,11 @@ function stopCurrentPlay() {
     currentSplashCanvasClick = null;
     currentSplashCanvasEl = null;
   }
+  if (currentFullscreenHandler) {
+    document.removeEventListener('fullscreenchange', currentFullscreenHandler);
+    currentFullscreenHandler = null;
+  }
+  if (document.fullscreenElement) document.exitFullscreen();
   Audio.stopMusic();
 }
 
@@ -2137,6 +2218,8 @@ function renderPlay(root, state) {
       </div>
       <div class="button-row">
         <button id="btn-back">« Back to builder</button>
+        <button id="btn-pause">Pause</button>
+        <button id="btn-fullscreen">Fullscreen</button>
         <button id="btn-share">Publish / share</button>
       </div>
     </div>
@@ -2147,10 +2230,12 @@ function renderPlay(root, state) {
       <div class="controls-help">
         Move: <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or arrows
         · Attack: <kbd>Space</kbd>
+        · Pause: <kbd>P</kbd>
+        · Fullscreen: <kbd>F</kbd>
         · Mute: <kbd>M</kbd>
         · Restart: <kbd>R</kbd>
         <br>
-        Controller: left stick / D-pad to move · any face button or right trigger to attack · <kbd>Start</kbd> to restart
+        Controller: left stick / D-pad to move · any face button or right trigger to attack · <kbd>Start</kbd> to pause or restart
         <span id="gp-indicator" style="display:none;color:var(--ok);margin-left:8px">&bull; controller detected</span>
       </div>
       <div class="play-footer">
@@ -2196,6 +2281,10 @@ function renderPlay(root, state) {
       currentSplashCanvasEl = null;
     }
     currentGame = new Game(canvas, state);
+    currentGame.onPauseChange = (paused) => {
+      const pb = root.querySelector('#btn-pause');
+      if (pb) pb.textContent = paused ? 'Resume' : 'Pause';
+    };
     currentGame.start();
   };
   currentSplashStartHandler = startGame;
@@ -2250,6 +2339,20 @@ function renderPlay(root, state) {
     stopCurrentPlay();
     renderShare(root, state, buildShareURL(state));
   });
+  const btnPause = root.querySelector('#btn-pause');
+  btnPause.addEventListener('click', () => {
+    if (currentGame) currentGame.togglePause();
+  });
+  const btnFullscreen = root.querySelector('#btn-fullscreen');
+  const canvasStack = root.querySelector('.canvas-stack');
+  btnFullscreen.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (canvasStack.requestFullscreen) canvasStack.requestFullscreen();
+  });
+  currentFullscreenHandler = () => {
+    btnFullscreen.textContent = document.fullscreenElement ? 'Exit fullscreen' : 'Fullscreen';
+  };
+  document.addEventListener('fullscreenchange', currentFullscreenHandler);
 }
 
 /* ========================================================================
